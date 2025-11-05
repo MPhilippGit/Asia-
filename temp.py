@@ -31,16 +31,6 @@ for name in dir(sensor.calibration_data):
 # change the balance between accuracy and noise in
 # the data.
 
-class GPIOData:
-    temperature: float
-    humidity: float
-    pressure: float
-
-    def __init__(self, temperature, humidity, pressure):
-        
-        pass
-    
-
 sensor.set_humidity_oversample(bme680.OS_2X)
 sensor.set_pressure_oversample(bme680.OS_4X)
 sensor.set_temperature_oversample(bme680.OS_8X)
@@ -67,11 +57,10 @@ print('\n\nPolling:')
 try:
     while True:
         if sensor.get_sensor_data():
-            
-            print(sensor.data)
-            print(type(sensor.get_sensor_data()))
-
-            output = "Blub"
+            output = '{0:.2f} C,{1:.2f} hPa,{2:.2f} %RH'.format(
+                sensor.data.temperature,
+                sensor.data.pressure,
+                sensor.data.humidity)
 
             if sensor.data.heat_stable:
                 print('{0},{1} Ohms'.format(
