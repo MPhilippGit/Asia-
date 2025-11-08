@@ -11,3 +11,6 @@ wheels/
 .idea
 db.sqlite3
 migrations/
+
+# disallow logs
+logs/
