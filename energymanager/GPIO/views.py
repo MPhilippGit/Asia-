@@ -1,14 +1,14 @@
 from django.shortcuts import render
 from django.template import loader
 from django.http import HttpResponse, JsonResponse, Http404
-from .models import TemperatureValues
+from .models import Temperatures
 
 def index(request):
    template = loader.get_template("GPIO/dashboard.html")
    return HttpResponse(template.render({}, request))
 
 def fetch_temperatures(request):
-   data = list(TemperatureValues.objects.values("measurement", "date"))
+   data = list(Temperatures.objects.values("measurement", "date"))
    return JsonResponse(data, safe=False)
 
 def fetch_humidities(request):
