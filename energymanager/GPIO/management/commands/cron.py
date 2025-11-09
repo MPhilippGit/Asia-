@@ -12,7 +12,7 @@ class Command(BaseCommand):
         temperature_unit = "Celsius"
         timestamp = timezone.now()
         try:
-            new_measurement = measurement(measurement=simulated_measurement, unit=temperature_unit, date=timestamp)
+            new_measurement = measurement(measurement=simulated_measurement, unit=temperature_unit, timestamp=timestamp)
             new_measurement.save()
             print(f"{new_measurement.measurement} \t {timestamp}")
         except Exception as error:
