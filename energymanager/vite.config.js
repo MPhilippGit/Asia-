@@ -1,29 +1,20 @@
 import { defineConfig } from "vite";
 import path from "path";
+import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
-   root: ".", // kein eigenes Root, da du index.html nicht nutzt
+   base: "./",
    build: {
       outDir: "static/dist",
       emptyOutDir: true,
       rollupOptions: {
-         input: path.resolve(__dirname, "frontend/index.js"),
-         output: {
-            entryFileNames: "assets/[name].js",
-            assetFileNames: "assets/[name].[ext]",
-         },
+         input: {
+            dashboard: path.resolve(__dirname, "frontend/index.js"),
+            home: path.resolve(__dirname, "frontend/home.js"),
+         } 
       },
    },
-   css: {
-      preprocessorOptions: {
-         scss: {
-            silenceDeprecations: [
-               'import',
-               'mixed-decls',
-               'color-functions',
-               'global-builtin',
-            ],
-         },
-      },
-   },
+   plugins: [
+      tailwindcss(),
+   ]
 });
