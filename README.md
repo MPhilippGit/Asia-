@@ -23,7 +23,7 @@
 ### Verwendete Technologien zur Umsetzung des Anforderungsprofils:
 - Systemarchitektur:
     - mariadb - Datenbank
-    - Apache - Webserver
+    - NGINX - Webserver
 - Programmiersprachen:
     - Python v3.13 (Backend, Sensordaten, Datenbanktransaktionen, Regression)
     - JavaScript ES6+ (UI, Graphische Darstellung)
@@ -31,7 +31,7 @@
     - scikit-learn v1.8.0 - Regressionsanalyse
     - bme680 v2.0.0 - Sensorwerterfassung (bme680)
     - gpiozero v2.0.1 - Sensorwerterfassung (RCWL-0516)
-    - mod-wsgi - Gateway für Apache Webserver
+    - gunicorn - Request verwaltung und serverprozesse
 - JavaScript:
     - react v.19.2 - UI-Library
     - chart.js v.4.5.1 - Library für graphische Darstellung
@@ -44,164 +44,88 @@
 ![Tux, the Linux mascot](./screenshots/sensorkabel.jpg)
 
 ### 1. Erfassung von Sensordaten (BME680 & RCWL-0516)
-Die Erfassung der Umweltdaten erfolgt über den BME680-Sensor, dessen Rohwerte (Gaswiderstand) in einen IAQ-Score umgerechnet werden. Parallel wird über den RCWL-0516 Radarsensor die Plausibilität der Messung (Anwesenheit/Bewegung) geprüft. Zur Systemerfassung werden beide Sensoren als Objekte instanziiert.
+Die Erfassung der Umweltdaten erfolgt über den BME680-Sensor, dessen Rohwerte (Gaswiderstand) in einen IAQ-Score umgerechnet werden. Parallel wird über den RCWL-0516 Radarsensor die Plausibilität der Messung (Anwesenheit/Bewegung) geprüft.
 
-**BME680 IAQ Berechnung und Sensorerfassung (`GPIO/sensors/bme680.py`):**
+Die Sensoren werden als eigenständige Skripte unter `scripts/` betrieben und geben ihre Ergebnisse als JSON über stdout aus. Das Django-Backend ruft diese Skripte per `subprocess.run()` auf und liest die JSON-Ausgabe ein. Dieser Ansatz ermöglicht es, die Pi-spezifischen Bibliotheken (`bme680`, `gpiozero`) im System-Python zu belassen, ohne sie in die Django-Virtualenv einbetten zu müssen.
+
+**BME680 Sensorskript (`scripts/bme680_read.py`):**
 ```python
-import time
-import bme680
+def resistance_to_iaq(sensor):
+    if sensor.data.gas_resistance <= 0:
+        return 500
+    GAS_MIN = 5000
+    GAS_MAX = 50000
+    gas = max(min(sensor.data.gas_resistance, GAS_MAX), GAS_MIN)
+    return round(500 - ((gas - GAS_MIN) / (GAS_MAX - GAS_MIN) * 500), 1)
 
 
-class BME680Data:
-    """Wraps a single BME680 sensor and provides convenience methods.
-
-    The constructor tries the primary I2C address first and falls back to
-    the secondary address if the sensor is not found. After construction the
-    sensor is configured with sensible oversampling and filter settings.
-    """
-
-    def __init__(self):
-        # Try primary address first; fallback to secondary on error.
-        try:
-            self.sensor = bme680.BME680(bme680.I2C_ADDR_PRIMARY)
-        except (RuntimeError, IOError):
-            self.sensor = bme680.BME680(bme680.I2C_ADDR_SECONDARY)
-        self.configure()
-
-    def data_dump(self):
-        """Return a dict of all public attributes from the sensor data object.
-
-        Useful for debugging and initial inspection of sensor fields.
-        """
-        data_dict = {}
-        for name in dir(self.sensor.data):
-            value = getattr(self.sensor.data, name)
-            if not name.startswith('_'):
-                data_dict[name] = value
-        return data_dict
-
-    def set_data(self):
-        """Sample the sensor for up to 15 seconds and populate attributes.
-
-        This method prepares the gas measurement heater profile and then
-        polls the sensor for up to 15 seconds. When `heat_stable` becomes
-        True the IAQ value is computed and the instance is returned. If a
-        stable VOC value cannot be established the method raises `IOError`.
-        """
-        self.prepare_voc_read()
-        start = time.perf_counter()
-        while time.perf_counter() - start < 15:
-            if self.sensor.get_sensor_data():
-                self.temperature = round(self.sensor.data.temperature, 2)
-                self.pressure = round(self.sensor.data.pressure, 2)
-                self.humidity = round(self.sensor.data.humidity, 2)
-                if self.sensor.data.heat_stable:
-                    # Convert gas resistance to a simple IAQ-like score.
-                    self.voc = self.resistance_to_IAQ()
-                    return self
-        # If no stable VOC reading after the timeout, indicate failure.
-        raise IOError
-
-    def resistance_to_IAQ(self):
-        """Convert raw gas resistance (Ohm) to a 0–500 IAQ-like score.
-
-        The conversion clamps the gas resistance into a fixed range and maps
-        that range linearly into 0..500 where higher scores indicate worse
-        air quality. The mapping and clamping are project-specific heuristics.
-        """
-        if self.sensor.data.gas_resistance <= 0:
-            return 500
-
-        GAS_MIN = 5000     # very poor air quality
-        GAS_MAX = 50000    # very good air quality
-
-        # Clamp gas resistance into the expected interval.
-        gas = max(min(self.sensor.data.gas_resistance, GAS_MAX), GAS_MIN)
-
-        # Map clamped resistance into an IAQ-style score (0 best — 500 worst).
-        IAQ = 500 - ((gas - GAS_MIN) / (GAS_MAX - GAS_MIN) * 500)
-
-        return round(IAQ, 1)
+def read_once(sensor):
+    prepare_voc_read(sensor)
+    start = time.perf_counter()
+    while time.perf_counter() - start < 15:
+        if sensor.get_sensor_data():
+            temperature = round(sensor.data.temperature, 2)
+            pressure = round(sensor.data.pressure, 2)
+            humidity = round(sensor.data.humidity, 2)
+            if sensor.data.heat_stable:
+                return {
+                    "temperature": temperature,
+                    "pressure": pressure,
+                    "humidity": humidity,
+                    "voc": resistance_to_iaq(sensor),
+                }
+    raise IOError("Stable VOC reading not achieved within timeout")
 
 
-    def to_dict(self):
-        """Return the last-read measurement attributes as a plain dict.
-
-        The shape matches what the rest of the application expects for
-        storing or serializing sensor readings.
-        """
-        return {
-            "temperature": self.temperature,
-            "pressure": self.pressure,
-            "voc": self.voc,
-            "humidity": self.humidity
-        }
-
-    def configure(self):
-        """Configure oversampling and filter settings for stable readings."""
-        self.sensor.set_humidity_oversample(bme680.OS_2X)
-        self.sensor.set_pressure_oversample(bme680.OS_4X)
-        self.sensor.set_temperature_oversample(bme680.OS_8X)
-        self.sensor.set_filter(bme680.FILTER_SIZE_3)
-
-    def prepare_voc_read(self):
-        """Enable gas measurement and set heater profile for VOC sampling."""
-        self.sensor.set_gas_status(bme680.ENABLE_GAS_MEAS)
-        self.sensor.set_gas_heater_temperature(320)
-        self.sensor.set_gas_heater_duration(150)
-        self.sensor.select_gas_heater_profile(0)
+def main():
+    parser = argparse.ArgumentParser(description="Read BME680 sensor")
+    parser.add_argument("--monitor", action="store_true", help="Run interactive monitoring loop")
+    args = parser.parse_args()
+    # ...
+    if args.monitor:
+        monitor(sensor)   # kontinuierlicher Stream für Debugging
+    else:
+        data = read_once(sensor)
+        print(json.dumps(data))  # JSON-Ausgabe für subprocess-Aufruf
 ```
 
-**RCWL Bewegungserkennung (`GPIO/sensors/rcwl.py`):**
+Das Skript unterstützt zwei Modi:
+- **Normalmodus** (kein Flag): liest einmalig und gibt JSON aus, z. B. `{"temperature": 22.5, "pressure": 1013.25, "humidity": 48.3, "voc": 120.0}`
+- **`--monitor`**: öffnet einen kontinuierlichen Ausgabestrom für manuelle Sensor-Diagnose
+
+**RCWL Bewegungserkennung (`scripts/rcwl_detect.py`):**
 ```python
-class RCWL:
-    """Wrapper for the RCWL motion sensor hardware.
+def main():
+    parser = argparse.ArgumentParser(description="Detect motion via RCWL radar sensor")
+    parser.add_argument("--duration", type=float, default=10.0, help="Seconds to wait for motion")
+    parser.add_argument("--monitor", action="store_true", help="Run interactive monitoring loop")
+    args = parser.parse_args()
 
-    The class attempts to initialise the sensor on GPIO pin 5. If
-    initialisation fails the exception is logged — callers should handle
-    a missing `self.sensor` attribute if they continue using the instance.
-    """
+    if args.monitor:
+        monitor()
+        return
 
-    def __init__(self):
-        try:
-            self.sensor = MotionSensor(5)
-        except Exception as e:
-            logger = logging.getLogger(__name__)
-            logger.error("Radar sensor initialization failed")
-
-
-    def detect_motion(self, duration_s=10):
-        """Wait up to `duration_s` seconds for motion and return a boolean.
-
-        This convenience method uses `wait_for_active` under the hood which
-        blocks until the sensor becomes active or the timeout elapses.
-        It returns `True` if motion was detected within the timeout,
-        otherwise `False`.
-        """
-        motion_detected = self.sensor.wait_for_active(timeout=duration_s)
-
-        return bool(motion_detected)
-
-    @staticmethod
-    def check_sensor():
-        """Interactive monitoring loop that prints activation events.
-
-        Intended for manual debugging from a terminal: it attaches simple
-        print callbacks to activation/deactivation events and then blocks on
-        `pause()` until interrupted with Ctrl+C.
-        """
+    try:
         sensor = MotionSensor(5)
-        try:
-            while True:
-                # Attach human-readable callbacks that include a timestamp.
-                sensor.when_activated = lambda: print(f"[{datetime.now().strftime('%H:%M:%S')}] Bewegung erkannt!")
-                sensor.when_deactivated = lambda: print(f"[{datetime.now().strftime('%H:%M:%S')}] Keine Bewegung mehr.")
-                print("Warte auf Bewegung...")
-                pause()
-        except KeyboardInterrupt:
-            print("Beende Monitoring...")
-            pass
+    except Exception as e:
+        print(json.dumps({"motion_detected": False, "error": str(e)}))
+        sys.exit(1)
 
+    motion_detected = bool(sensor.wait_for_active(timeout=args.duration))
+    print(json.dumps({"motion_detected": motion_detected}))
+```
+
+Ausgabe im Normalfall: `{"motion_detected": true}` oder `{"motion_detected": false}`.  
+Bei Initialisierungsfehler: `{"motion_detected": false, "error": "<Fehlermeldung>"}` mit Exit-Code 1.
+
+**Sensor-Monitoring via Management Command (`GPIO/management/commands/monitor.py`):**
+
+Für manuelle Sensor-Diagnose steht ein Django-Command zur Verfügung, der die `--monitor`-Flags der Skripte aufruft:
+
+```bash
+python manage.py monitor bme       # BME680 Live-Stream
+python manage.py monitor rcwl      # RCWL Bewegungserkennung Live
+python manage.py monitor bme rcwl  # beide gleichzeitig
 ```
 
 ### 2. Automatisierte Datenpflege
@@ -218,64 +142,73 @@ def cleanup_entries(cls, timespan=30):
 ```
 
 **Messvorgang (`GPIO/management/commands/measure.py`):**
+
+Der Command ruft die Sensor-Skripte als Subprozesse auf und liest deren JSON-Ausgabe ein. Dadurch ist Django unabhängig von den Pi-spezifischen Bibliotheken.
+
 ```python
-from GPIO.models import SensorValues
-from GPIO.sensors.bme680 import BME680Data
-from GPIO.sensors.rcwl import RCWL
-from django.utils import timezone
-import random
-import logging
+SCRIPTS = Path(settings.BASE_DIR) / "scripts"
 
 
 class Command(BaseCommand):
-    # Short description shown in `manage.py help`.
     help = "Adds a sensor measurements to the database"
 
     def get_sensor_read(self):
-        """Read the BME680 sensor and return a plain dict of values.
-
-        This method constructs a `BME680Data` instance, triggers a short
-        sampling sequence via `set_data()` and converts the result to a
-        dictionary with `to_dict()` so it can be persisted.
-        """
-        handler = BME680Data()
-        return handler.set_data().to_dict()
+        """Run bme680_read.py and return a plain dict of values."""
+        result = subprocess.run(
+            ["python3", str(SCRIPTS / "bme680_read.py")],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return json.loads(result.stdout)
 
     def is_plausible(self):
-        """Return a boolean indicating if the read is plausible.
-
-        Uses the RCWL radar sensor to detect presence/motion. If motion is
-        detected the reading is considered plausible. The method returns
-        `True`/`False` accordingly.
-        """
-        radar_sensor = RCWL()
-        return radar_sensor.detect_motion()
+        """Run rcwl_detect.py and return True if motion was detected."""
+        try:
+            result = subprocess.run(
+                ["python3", str(SCRIPTS / "rcwl_detect.py"), "--duration", "10"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            return json.loads(result.stdout)["motion_detected"]
+        except subprocess.CalledProcessError:
+            return False
 
     def handle(self, *args, **options):
-        """Main command entry point: read sensors and save to DB.
-
-        The method logs a summary on success and logs the exception on any
-        failure during reading or saving. Persistence is delegated to
-        `SensorValues.save_values` (model-layer helper).
-        """
         logger = logging.getLogger(__name__)
         try:
             data = self.get_sensor_read()
             data["is_plausible"] = self.is_plausible()
             data["timestamp"] = timezone.now()
-            # Persist data using the model helper; keep persistence logic
-            # in the model to maintain single responsibility.
             SensorValues.save_values(**data)
             logger.info("New data: {0} C, {1} hPa, {2} rH[%], {3} [IAQ]".format(
-                data["temperature"],
-                data["pressure"],
-                data["humidity"],
-                data["voc"]
+                data["temperature"], data["pressure"], data["humidity"], data["voc"]
             ))
         except Exception as error:
-            # Log any exception during read/save so the scheduler can inspect
-            # the log for problems.
             logger.error(f"{error} database operation failed")
+```
+
+**Simulierter Messvorgang für Entwicklung (`GPIO/management/commands/simulate.py`):**
+
+Für lokale Entwicklung ohne Hardware steht ein separater Command zur Verfügung, der synthetische Messwerte erzeugt und denselben Persistenzpfad wie `measure` nutzt:
+
+```bash
+python manage.py simulate
+```
+
+```python
+class Command(BaseCommand):
+    help = "Generates data for db for testing. Do not use in production."
+
+    def simulate_gpio(self):
+        return {
+            "temperature": round(random.uniform(22, 24), 2),
+            "voc": round(random.uniform(24000, 40000), 2),
+            "humidity": round(random.uniform(40, 60), 2),
+            "pressure": round(random.uniform(980, 995), 2),
+            "is_plausible": True
+        }
 ```
 
 ### 3. Datenbankstruktur

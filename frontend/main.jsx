@@ -18,7 +18,6 @@ root.render(
 
 function App() {
   const [graph, setGraph] = useState(PATHS.DASHBOARD);
-  console.log(graph);
   return (
     <div className="dash">
       <Sidebar graph={graph} setGraph={setGraph} />
