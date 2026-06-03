@@ -44,9 +44,9 @@
 ![Tux, the Linux mascot](./screenshots/sensorkabel.jpg)
 
 ### 1. Erfassung von Sensordaten (BME680 & RCWL-0516)
-Die Erfassung der Umweltdaten erfolgt über den BME680-Sensor, dessen Rohwerte (Gaswiderstand) in einen IAQ (Indoor Air Quality)-Score umgerechnet werden. Parallel wird über den RCWL-0516 Radarsensor die Plausibilität der Messung (Anwesenheit/Bewegung) geprüft. Zur Systemerfassung werden beide Sensoren als Objekte instanziiert.
+Die Erfassung der Umweltdaten erfolgt über den BME680-Sensor, dessen Rohwerte (Gaswiderstand) in einen IAQ-Score umgerechnet werden. Parallel wird über den RCWL-0516 Radarsensor die Plausibilität der Messung (Anwesenheit/Bewegung) geprüft. Zur Systemerfassung werden beide Sensoren als Objekte instanziiert.
 
-**BME680 IAQ (Indoor Air Quality) Berechnung und Sensorerfassung (`GPIO/sensors/bme680.py`):**
+**BME680 IAQ Berechnung und Sensorerfassung (`GPIO/sensors/bme680.py`):**
 ```python
 import time
 import bme680
@@ -85,7 +85,7 @@ class BME680Data:
 
         This method prepares the gas measurement heater profile and then
         polls the sensor for up to 15 seconds. When `heat_stable` becomes
-        True the IAQ (Indoor Air Quality) value is computed and the instance is returned. If a
+        True the IAQ value is computed and the instance is returned. If a
         stable VOC value cannot be established the method raises `IOError`.
         """
         self.prepare_voc_read()
@@ -96,14 +96,14 @@ class BME680Data:
                 self.pressure = round(self.sensor.data.pressure, 2)
                 self.humidity = round(self.sensor.data.humidity, 2)
                 if self.sensor.data.heat_stable:
-                    # Convert gas resistance to a simple IAQ (Indoor Air Quality)-like score.
-                    self.voc = self.resistance_to_IAQ (Indoor Air Quality)()
+                    # Convert gas resistance to a simple IAQ-like score.
+                    self.voc = self.resistance_to_IAQ()
                     return self
         # If no stable VOC reading after the timeout, indicate failure.
         raise IOError
 
-    def resistance_to_IAQ (Indoor Air Quality)(self):
-        """Convert raw gas resistance (Ohm) to a 0–500 IAQ (Indoor Air Quality)-like score.
+    def resistance_to_IAQ(self):
+        """Convert raw gas resistance (Ohm) to a 0–500 IAQ-like score.
 
         The conversion clamps the gas resistance into a fixed range and maps
         that range linearly into 0..500 where higher scores indicate worse
@@ -118,10 +118,10 @@ class BME680Data:
         # Clamp gas resistance into the expected interval.
         gas = max(min(self.sensor.data.gas_resistance, GAS_MAX), GAS_MIN)
 
-        # Map clamped resistance into an IAQ (Indoor Air Quality)-style score (0 best — 500 worst).
-        IAQ (Indoor Air Quality) = 500 - ((gas - GAS_MIN) / (GAS_MAX - GAS_MIN) * 500)
+        # Map clamped resistance into an IAQ-style score (0 best — 500 worst).
+        IAQ = 500 - ((gas - GAS_MIN) / (GAS_MAX - GAS_MIN) * 500)
 
-        return round(IAQ (Indoor Air Quality), 1)
+        return round(IAQ, 1)
 
 
     def to_dict(self):
@@ -266,7 +266,7 @@ class Command(BaseCommand):
             # Persist data using the model helper; keep persistence logic
             # in the model to maintain single responsibility.
             SensorValues.save_values(**data)
-            logger.info("New data: {0} C, {1} hPa, {2} rH[%], {3} [IAQ (Indoor Air Quality)]".format(
+            logger.info("New data: {0} C, {1} hPa, {2} rH[%], {3} [IAQ]".format(
                 data["temperature"],
                 data["pressure"],
                 data["humidity"],
@@ -285,7 +285,7 @@ class Command(BaseCommand):
 | Feld | Typ | Beschreibung |
 |---|---|---|
 | `id` | AutoField (PK) | automatisch |
-| `voc` | DecimalField (10,2) | Luftqualität (IAQ (Indoor Air Quality)-Score) |
+| `voc` | DecimalField (10,2) | Luftqualität (IAQ-Score) |
 | `pressure` | DecimalField (10,2) | Luftdruck (hPa) |
 | `temperature` | DecimalField (10,2) | Temperatur (°C) |
 | `humidity` | DecimalField (10,2) | Luftfeuchtigkeit (%) |
